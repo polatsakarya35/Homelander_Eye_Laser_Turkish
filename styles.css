@@ -1,0 +1,206 @@
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+
+body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: #111;
+    font-family: 'Press Start 2P', monospace;
+    image-rendering: pixelated;
+}
+
+#gameContainer {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    /* background: repeating-linear-gradient(45deg, #222 0px, #222 10px, #111 10px, #111 20px); */
+}
+
+#videoElement {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 1;
+    transform: scaleX(-1);
+    opacity: 1.0;
+}
+
+#gameCanvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 2;
+}
+
+#ui {
+    position: absolute;
+    top: 20px;
+    left: 20px;
+    z-index: 3;
+    color: #be89ff;
+    font-size: 20px;
+    background: rgb(0,0,0,0.6);
+    padding: 12px;
+    border: 4px solid #ffed66;
+    text-shadow: 1px 1px 0 #000;
+    font-weight: bold;
+    box-shadow: 4px 4px 0 #000;
+    max-width: 250px;
+    line-height: 1.4;
+}
+
+#start-overlay {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 4;
+    padding: 20px;
+    font-size: 14px;
+    background: #111;
+    color: #68ff98;
+    border: 4px solid #68ff98;
+    font-weight: bold;
+    box-shadow: 8px 8px 0 #000;
+    text-align: center;
+    max-width: 600px;
+}
+
+#startButton {
+    margin-top: 15px;
+    padding: 12px 24px;
+    font-size: 20px;
+    background: #68ff98;
+    color: #111;
+    border: 3px solid #ff00ff;
+    cursor: pointer;
+    font-weight: bold;
+    box-shadow: 4px 4px 0 #000;
+    text-transform: uppercase;
+    image-rendering: pixelated;
+}
+
+#startButton:hover {
+    background: #ff00ff;
+    color: #fff;
+    border-color: #33ffcc;
+}
+
+.eye-glow {
+    position: absolute;
+    width: 35px;
+    height: 35px;
+    background: #ebff68;
+    border: 7px solid #ff00ff;
+    box-shadow: 0 0 0 2px #ff66cc, 0 0 12px #68ff98;
+    border-radius: 50%;
+    image-rendering: pixelated;
+    z-index: 3;
+    transform: translate(-50%, -50%);
+}
+
+#gameOverScreen {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 5;
+    background: rgba(17, 17, 17, 0.9);
+    padding: 20px;
+    border: 4px solid #ff0033;
+    box-shadow: 8px 8px 0 #000;
+    color: #ff0033;
+    font-size: 18px;
+    font-weight: bold;
+    text-align: center;
+    display: none;
+    line-height: 1.4;
+}
+
+#gameOverScreen button {
+    margin-top: 20px;
+    padding: 10px 20px;
+    font-size: 20px;
+    background: #ff0033;
+    color: #fff;
+    border: 3px solid #ffaa00;
+    cursor: pointer;
+    font-weight: bold;
+    box-shadow: 4px 4px 0 #000;
+    text-transform: uppercase;
+    margin-bottom: 15px;
+}
+
+#gameOverScreen button:hover {
+    background: #ffaa00;
+    color: #000;
+    border-color: #ff0033;
+}
+
+@media (max-width: 768px) {
+    #ui {
+        top: 10px;
+        left: 10px;
+        font-size: 14px;
+        padding: 8px;
+        border-width: 3px;
+    }
+
+    #start-overlay, #gameOverScreen {
+        font-size: 12px;
+        padding: 15px;
+        max-width: 90vw;
+    }
+
+    #startButton, #gameOverScreen button {
+        font-size: 16px;
+        padding: 10px 16px;
+    }
+
+    .eye-glow {
+        width: 16px;
+        height: 16px;
+        border-width: 2px;
+    }
+}
+
+.text-box {
+    padding: 8px 15px;
+    background-color: rgba(255, 255, 255, 0.9);
+    color: black;
+    font-family: "Arial", "Helvetica Neue", Helvetica, sans-serif;
+    border: 2px solid black;
+    box-shadow: 3px 3px 0px black;
+    font-size: clamp(13px, 2vw, 15px);
+    text-align: center;
+    z-index: 200;
+    opacity: 1;
+    transition: opacity 0.3s ease-in-out;
+    max-width: 90%;
+    box-sizing: border-box;
+    /* border-radius: 6px; */
+}
+
+#logo-container {
+    position: absolute;
+    bottom: 5px;
+    right: 5px;
+}
+
+a {
+    color: #0000ff !important;
+    /* text-decoration: none; */
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+#logo {
+    font-size: clamp(1.5em, 4vw, 2em);
+}
