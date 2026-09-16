@@ -1383,7 +1383,7 @@ class LaserGame {
         document.getElementById('nearMissOverlay')?.classList.remove('show');
 
         // Yeni tur: lazer ucu başlat ekranı merkezinde (0,0 dünya)
-        this.isCalibrated = this._faceDetectedOnce;
+        this.isCalibrated = false;
         this.gaze = { x: 0.5, y: 0.5 };
         this.smoothGaze = { x: 0.5, y: 0.5 };
         this.leftEye = { x: 0.45, y: 0.38 };
