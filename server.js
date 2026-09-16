@@ -26,6 +26,8 @@ app.get('/apple-touch-icon-precomposed.png', (_req, res) => {
 
 const mimeFor = (filePath) => {
     if (filePath.endsWith('.wasm')) return 'application/wasm';
+    if (filePath.endsWith('.mjs')) return 'application/javascript';
+    if (filePath.endsWith('.js')) return 'application/javascript';
     if (filePath.endsWith('.data')) return 'application/octet-stream';
     if (filePath.endsWith('.binarypb')) return 'application/octet-stream';
     if (filePath.endsWith('.task')) return 'application/octet-stream';

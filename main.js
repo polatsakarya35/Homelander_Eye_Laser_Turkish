@@ -56,6 +56,8 @@ class LaserGame {
         this._faceDetectedOnce = false;
         this._detectRunning = false;
         this._detectTs = 0;
+        this._faceCanvas = null;
+        this._faceCtx = null;
         this.leftEye = { x: 0.45, y: 0.38 };
         this.rightEye = { x: 0.55, y: 0.38 };
         this.smoothLeftEye = { x: 0.45, y: 0.38 };
@@ -851,10 +853,14 @@ class LaserGame {
             }
         });
         if (typeof this.faceMesh.initialize === 'function') {
-            await this.faceMesh.initialize();
+            await Promise.race([
+                this.faceMesh.initialize(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error('FaceMesh init zaman aşımı')), 25000))
+            ]);
         }
         this._useLegacyFaceMesh = true;
         this.detectionEnabled = true;
+        this.setTrackingStatus('FaceMesh hazır — kameraya bak');
     }
 
     async setupLocalFaceLandmarker(delegate) {
@@ -903,18 +909,41 @@ class LaserGame {
         }
     }
 
+    getFaceInput() {
+        const video = this.video;
+        if (!video || video.readyState < 2) return null;
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (!vw || !vh) return null;
+
+        // Safari/HTTPS: doğrudan video yerine canvas daha güvenilir
+        if (!this._faceCanvas) {
+            this._faceCanvas = document.createElement('canvas');
+            this._faceCtx = this._faceCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        if (this._faceCanvas.width !== vw || this._faceCanvas.height !== vh) {
+            this._faceCanvas.width = vw;
+            this._faceCanvas.height = vh;
+        }
+        this._faceCtx.drawImage(video, 0, 0, vw, vh);
+        return this._faceCanvas;
+    }
+
     async runFaceDetectionStep() {
-        if (!this.video || this.video.readyState < 2 || !this.detectionEnabled) return;
+        if (!this.detectionEnabled) return;
+        const input = this.getFaceInput();
+        if (!input) return;
+
         if (this.faceLandmarker) {
             this._detectTs += 33;
-            const results = this.faceLandmarker.detectForVideo(this.video, this._detectTs);
+            const results = this.faceLandmarker.detectForVideo(input, this._detectTs);
             if (results?.faceLandmarks?.[0]) {
                 this.updateGaze(results.faceLandmarks[0]);
             }
             return;
         }
         if (this.faceMesh) {
-            await this.faceMesh.send({ image: this.video });
+            await this.faceMesh.send({ image: input });
         }
     }
     
