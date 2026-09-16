@@ -50,6 +50,8 @@ class LaserGame {
         
         // Face tracking
         this.faceLandmarker = null;
+        this.faceMesh = null;
+        this._useLegacyFaceMesh = false;
         this.detectionEnabled = false;
         this._faceDetectedOnce = false;
         this._detectRunning = false;
@@ -794,11 +796,41 @@ class LaserGame {
         this.ghostTexture.minFilter = THREE.NearestFilter;
     }
     
+    loadScript(src) {
+        return new Promise((resolve, reject) => {
+            const existing = document.querySelector(`script[data-src="${src}"]`);
+            if (existing) {
+                if (existing.dataset.loaded === '1') resolve();
+                else existing.addEventListener('load', () => resolve(), { once: true });
+                return;
+            }
+            const script = document.createElement('script');
+            script.src = src;
+            script.crossOrigin = 'anonymous';
+            script.dataset.src = src;
+            script.onload = () => {
+                script.dataset.loaded = '1';
+                resolve();
+            };
+            script.onerror = () => reject(new Error(`Script yüklenemedi: ${src}`));
+            document.head.appendChild(script);
+        });
+    }
+
+    async loadVisionModule() {
+        const mpVersion = '0.10.14';
+        try {
+            return await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/+esm`);
+        } catch (importError) {
+            console.warn('ESM import başarısız, vision_bundle deneniyor:', importError);
+            await this.loadScript(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/vision_bundle.js`);
+            return import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/+esm`);
+        }
+    }
+
     async createFaceLandmarker(delegate) {
         const mpVersion = '0.10.14';
-        const { FaceLandmarker, FilesetResolver } = await import(
-            `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/+esm`
-        );
+        const { FaceLandmarker, FilesetResolver } = await this.loadVisionModule();
         const vision = await FilesetResolver.forVisionTasks(
             `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/wasm`
         );
@@ -814,6 +846,32 @@ class LaserGame {
         });
     }
 
+    async setupLegacyFaceMesh() {
+        const mpVersion = '0.4.1633559619';
+        await this.loadScript(`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${mpVersion}/face_mesh.js`);
+        if (typeof window.FaceMesh === 'undefined') {
+            throw new Error('FaceMesh global bulunamadı');
+        }
+        this.faceMesh = new window.FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${mpVersion}/${file}`
+        });
+        this.faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.35,
+            minTrackingConfidence: 0.35
+        });
+        this.faceMesh.onResults((results) => {
+            if (results.multiFaceLandmarks?.[0]) {
+                this.updateGaze(results.multiFaceLandmarks[0]);
+            }
+        });
+        if (typeof this.faceMesh.initialize === 'function') {
+            await this.faceMesh.initialize();
+        }
+        this._useLegacyFaceMesh = true;
+    }
+
     async setupMediaPipe() {
         try {
             try {
@@ -823,19 +881,33 @@ class LaserGame {
                 this.faceLandmarker = await this.createFaceLandmarker('CPU');
             }
             this.detectionEnabled = true;
-        } catch (error) {
-            console.error('Yüz takibi yüklenemedi:', error);
-            this.detectionEnabled = false;
-            this.faceLandmarker = null;
+            this._useLegacyFaceMesh = false;
+        } catch (landmarkerError) {
+            console.warn('FaceLandmarker başarısız, FaceMesh deneniyor:', landmarkerError);
+            try {
+                await this.setupLegacyFaceMesh();
+                this.detectionEnabled = true;
+            } catch (legacyError) {
+                console.error('Yüz takibi yüklenemedi:', legacyError);
+                this.detectionEnabled = false;
+                this.faceLandmarker = null;
+                this.faceMesh = null;
+            }
         }
     }
 
     async runFaceDetectionStep() {
-        if (!this.video || this.video.readyState < 2 || !this.detectionEnabled || !this.faceLandmarker) return;
-        this._detectTs += 33;
-        const results = this.faceLandmarker.detectForVideo(this.video, this._detectTs);
-        if (results?.faceLandmarks?.[0]) {
-            this.updateGaze(results.faceLandmarks[0]);
+        if (!this.video || this.video.readyState < 2 || !this.detectionEnabled) return;
+        if (this.faceLandmarker) {
+            this._detectTs += 33;
+            const results = this.faceLandmarker.detectForVideo(this.video, this._detectTs);
+            if (results?.faceLandmarks?.[0]) {
+                this.updateGaze(results.faceLandmarks[0]);
+            }
+            return;
+        }
+        if (this.faceMesh) {
+            await this.faceMesh.send({ image: this.video });
         }
     }
     
