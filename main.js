@@ -51,6 +51,8 @@ class LaserGame {
         // Face tracking
         this.faceMesh = null;
         this.detectionEnabled = false;
+        this._faceDetectedOnce = false;
+        this._detectRunning = false;
         this.leftEye = { x: 0.45, y: 0.38 };
         this.rightEye = { x: 0.55, y: 0.38 };
         this.smoothLeftEye = { x: 0.45, y: 0.38 };
@@ -102,32 +104,103 @@ class LaserGame {
         await this.setupMediaPipe();
         await this.loadSprites();
         this.setupShaders();
-        await this.setupVideo(); // Wait for video
         this.setupEventListeners();
         this.createLaserTip();
         this.createPersistentBeams();
         this.renderLeaderboard('leaderboardList');
         this.animate();
-
-        this.waitUntilReady();
+        this.markAppReady();
     }
 
-    waitUntilReady() {
+    markAppReady() {
         const startBtn = document.getElementById('startButton');
-        startBtn.disabled = true;
-        startBtn.textContent = "⏳ Yükleniyor...";
-
-        const checkReady = setInterval(() => {
-            if (this.isReadyToStart()) {
-                startBtn.disabled = false;
-                startBtn.textContent = "Başla";
-                clearInterval(checkReady);
-            }
-        }, 500);
+        if (!startBtn) return;
+        startBtn.disabled = false;
+        startBtn.textContent = 'Başla';
     }
 
     isReadyToStart() {
-        return this.video && this.video.readyState >= 2;
+        return this.detectionEnabled || !this.faceMesh;
+    }
+
+    waitForGlobal(name, timeoutMs = 12000) {
+        return new Promise((resolve, reject) => {
+            if (window[name]) {
+                resolve();
+                return;
+            }
+            const started = Date.now();
+            const timer = setInterval(() => {
+                if (window[name]) {
+                    clearInterval(timer);
+                    resolve();
+                } else if (Date.now() - started > timeoutMs) {
+                    clearInterval(timer);
+                    reject(new Error(`${name} yüklenemedi`));
+                }
+            }, 50);
+        });
+    }
+
+    getVideoLayout() {
+        const video = this.video;
+        const rect = video?.getBoundingClientRect?.() || {
+            left: 0,
+            top: 0,
+            width: window.innerWidth,
+            height: window.innerHeight
+        };
+        const vw = video?.videoWidth || 640;
+        const vh = video?.videoHeight || 480;
+        const scale = Math.max(rect.width / vw, rect.height / vh) || 1;
+        const drawW = vw * scale;
+        const drawH = vh * scale;
+        return {
+            rect,
+            vw,
+            vh,
+            scale,
+            offsetX: (rect.width - drawW) / 2,
+            offsetY: (rect.height - drawH) / 2,
+            drawW,
+            drawH
+        };
+    }
+
+    landmarkToDisplay(lmX, lmY) {
+        const { rect, offsetX, offsetY, scale, vw, vh } = this.getVideoLayout();
+        const mx = 1 - lmX;
+        const px = rect.left + offsetX + mx * vw * scale;
+        const py = rect.top + offsetY + lmY * vh * scale;
+        return {
+            px,
+            py,
+            nx: (px - rect.left) / rect.width,
+            ny: (py - rect.top) / rect.height
+        };
+    }
+
+    displayNormToWorld(nx, ny) {
+        const { rect } = this.getVideoLayout();
+        const px = rect.left + nx * rect.width;
+        const py = rect.top + ny * rect.height;
+        return {
+            x: px - window.innerWidth / 2,
+            y: -(py - window.innerHeight / 2)
+        };
+    }
+
+    async ensureCamera() {
+        if (this.video?.readyState >= 2) return;
+        await this.setupVideo();
+    }
+
+    async waitForFaceDetection(timeoutMs = 10000) {
+        if (this._faceDetectedOnce || !this.detectionEnabled) return;
+        const started = Date.now();
+        while (!this._faceDetectedOnce && Date.now() - started < timeoutMs) {
+            await new Promise(r => setTimeout(r, 80));
+        }
     }
 
     getLeaderboard() {
@@ -561,20 +634,13 @@ class LaserGame {
     updateKittenPositions() {
         if (!this.isCalibrated || this.kittens.length === 0 || !this.currentFaceCenter) return;
         
-        // Get face center position in screen coordinates
-        const faceCenterX = (1 - this.currentFaceCenter.x) * window.innerWidth; // Mirror for selfie view
-        const faceCenterY = this.currentFaceCenter.y * window.innerHeight;
+        const face = this.landmarkToDisplay(this.currentFaceCenter.x, this.currentFaceCenter.y);
         
-        this.kittens.forEach((kitten, index) => {
+        this.kittens.forEach((kitten) => {
             if (kitten.userData.alive) {
                 const relPos = kitten.userData.relativePosition;
-                
-                // Position relative to face center (forehead area)
-                const kittenX = (faceCenterX + relPos.x * window.innerWidth - window.innerWidth/2);
-                const kittenY = -(faceCenterY + relPos.y * window.innerHeight - window.innerHeight/2);
-                
-                kitten.position.x = kittenX;
-                kitten.position.y = kittenY;
+                kitten.position.x = face.px + relPos.x * window.innerWidth - window.innerWidth / 2;
+                kitten.position.y = -(face.py + relPos.y * window.innerHeight - window.innerHeight / 2);
             }
         });
     }
@@ -740,19 +806,29 @@ class LaserGame {
     
     async setupMediaPipe() {
         try {
-            if (typeof window.FaceMesh !== 'undefined') {
-                this.faceMesh = new window.FaceMesh({
-                    locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`
-                });
-                this.faceMesh.setOptions({ maxNumFaces: 1, refineLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
-                this.faceMesh.onResults(results => {
-                    if (results.multiFaceLandmarks?.[0]) this.updateGaze(results.multiFaceLandmarks[0]);
-                });
-                this.detectionEnabled = true;
-            } else {
-                this.setupMouseFallback();
+            if (typeof window.FaceMesh === 'undefined') {
+                await this.waitForGlobal('FaceMesh', 15000);
             }
+            this.faceMesh = new window.FaceMesh({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@0.4.1633559619/${file}`
+            });
+            this.faceMesh.setOptions({
+                maxNumFaces: 1,
+                refineLandmarks: true,
+                minDetectionConfidence: 0.35,
+                minTrackingConfidence: 0.35
+            });
+            this.faceMesh.onResults((results) => {
+                if (results.multiFaceLandmarks?.[0]) {
+                    this.updateGaze(results.multiFaceLandmarks[0]);
+                }
+            });
+            if (typeof this.faceMesh.initialize === 'function') {
+                await this.faceMesh.initialize();
+            }
+            this.detectionEnabled = true;
         } catch (error) {
+            console.warn('MediaPipe yüklenemedi, fare modu:', error);
             this.setupMouseFallback();
         }
     }
@@ -776,6 +852,8 @@ class LaserGame {
         const leftEyeCenter = landmarks[468] || landmarks[33];
         const rightEyeCenter = landmarks[473] || landmarks[362];
         if (!leftEyeCenter || !rightEyeCenter) return;
+
+        this._faceDetectedOnce = true;
         
         const currentCenter = { x: (leftEyeCenter.x + rightEyeCenter.x) / 2, y: (leftEyeCenter.y + rightEyeCenter.y) / 2 };
         
@@ -801,10 +879,12 @@ class LaserGame {
         this.gaze.x = Math.max(0, Math.min(1, 0.5 - deltaX));
         this.gaze.y = Math.max(0, Math.min(1, 0.5 + deltaY));
         
-        this.leftEye.x = 1 - leftEyeCenter.x;
-        this.leftEye.y = leftEyeCenter.y;
-        this.rightEye.x = 1 - rightEyeCenter.x;
-        this.rightEye.y = rightEyeCenter.y;
+        const left = this.landmarkToDisplay(leftEyeCenter.x, leftEyeCenter.y);
+        const right = this.landmarkToDisplay(rightEyeCenter.x, rightEyeCenter.y);
+        this.leftEye.x = left.nx;
+        this.leftEye.y = left.ny;
+        this.rightEye.x = right.nx;
+        this.rightEye.y = right.ny;
 
         // Ağız: Space basılıysa yüz algısı ezmesin
         if (!this.spaceHeld) {
@@ -833,26 +913,30 @@ class LaserGame {
     }
     
     updateEyeUI() {
-        const leftX = this.smoothLeftEye.x * window.innerWidth;
-        const rightX = this.smoothRightEye.x * window.innerWidth;
+        const { rect } = this.getVideoLayout();
+        const leftX = rect.left + this.smoothLeftEye.x * rect.width;
+        const leftY = rect.top + this.smoothLeftEye.y * rect.height;
+        const rightX = rect.left + this.smoothRightEye.x * rect.width;
+        const rightY = rect.top + this.smoothRightEye.y * rect.height;
         document.getElementById('leftEye').style.left = leftX + 'px';
         document.getElementById('rightEye').style.left = rightX + 'px';
-        
-        const videoRect = document.getElementById('videoElement').getBoundingClientRect();
-        document.getElementById('leftEye').style.top = (videoRect.top + this.smoothLeftEye.y * videoRect.height) + 'px';
-        document.getElementById('rightEye').style.top = (videoRect.top + this.smoothRightEye.y * videoRect.height) + 'px';
+        document.getElementById('leftEye').style.top = leftY + 'px';
+        document.getElementById('rightEye').style.top = rightY + 'px';
 
         this.syncLaserAim();
     }
 
     getAimPoints() {
         // Hedef = bakış; başlangıçta (0.5, 0.5) → ekran merkezi (başlat alanı)
-        let tipX = (this.smoothGaze.x - 0.5) * window.innerWidth;
-        let tipY = -(this.smoothGaze.y - 0.5) * window.innerHeight;
-        const leftX = (this.smoothLeftEye.x - 0.5) * window.innerWidth;
-        const leftY = -(this.smoothLeftEye.y - 0.5) * window.innerHeight;
-        const rightX = (this.smoothRightEye.x - 0.5) * window.innerWidth;
-        const rightY = -(this.smoothRightEye.y - 0.5) * window.innerHeight;
+        const tip = this.displayNormToWorld(this.smoothGaze.x, this.smoothGaze.y);
+        let tipX = tip.x;
+        let tipY = tip.y;
+        const left = this.displayNormToWorld(this.smoothLeftEye.x, this.smoothLeftEye.y);
+        const right = this.displayNormToWorld(this.smoothRightEye.x, this.smoothRightEye.y);
+        const leftX = left.x;
+        const leftY = left.y;
+        const rightX = right.x;
+        const rightY = right.y;
 
         // Uç gözlerin üstüne çökerse kısa bir ışın bırak (üste fırlatma yok)
         const midX = (leftX + rightX) / 2;
@@ -1139,21 +1223,36 @@ class LaserGame {
     
     async setupVideo() {
         const video = document.getElementById('videoElement');
+        if (this.video?.srcObject && this.video.readyState >= 2) return;
+
         try {
-            video.srcObject = await navigator.mediaDevices.getUserMedia({
-                video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }
+            if (!navigator.mediaDevices?.getUserMedia) {
+                throw new Error('Kamera desteklenmiyor');
+            }
+
+            const stream = await navigator.mediaDevices.getUserMedia({
+                video: {
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 },
+                    facingMode: 'user'
+                },
+                audio: false
             });
 
+            video.srcObject = stream;
             this.video = video;
 
-            // Wait for video to become ready
-            video.onloadeddata = () => {
-                if (this.detectionEnabled && this.faceMesh) {
-                    this.startFaceDetection(); // Begin tracking as soon as video is ready
-                }
-            };
+            await new Promise((resolve, reject) => {
+                video.onloadedmetadata = () => {
+                    video.play().then(resolve).catch(reject);
+                };
+                video.onerror = () => reject(new Error('Video yüklenemedi'));
+            });
+
+            this.startFaceDetection();
         } catch (error) {
-            alert('Oynamak için kamera erişimi gerekli.');
+            console.error('Kamera hatası:', error);
+            throw error;
         }
     }
 
@@ -1162,11 +1261,8 @@ class LaserGame {
         const savedName = localStorage.getItem('eyeLaserNickname') || '';
         if (savedName && nickInput) nickInput.value = savedName;
 
-        document.getElementById('startButton').addEventListener('click', () => {
-            if (!this.isReadyToStart()) {
-                alert("Kamera ve yüz takibinin tamamen yüklenmesini bekleyin.");
-                return;
-            }
+        document.getElementById('startButton').addEventListener('click', async () => {
+            const startBtn = document.getElementById('startButton');
             const name = (nickInput?.value || '').trim().slice(0, 12);
             if (!name) {
                 nickInput?.focus();
@@ -1174,9 +1270,28 @@ class LaserGame {
                 alert('Kurtarıcı adını gir — kediler kimi kutlayacak bilmek istiyor.');
                 return;
             }
+
+            startBtn.disabled = true;
+            startBtn.textContent = '⏳ Kamera açılıyor...';
+            try {
+                await this.ensureCamera();
+            } catch (error) {
+                alert('Oynamak için kamera izni gerekli. Safari/Chrome ayarlarından siteye kamera izni ver.');
+                startBtn.disabled = false;
+                startBtn.textContent = 'Başla';
+                return;
+            }
+
+            if (this.detectionEnabled) {
+                startBtn.textContent = '⏳ Yüz takibi...';
+                await this.waitForFaceDetection(10000);
+            }
+
             this.playerName = name;
             localStorage.setItem('eyeLaserNickname', name);
-            this.beginGameplay();
+            await this.beginGameplay();
+            startBtn.disabled = false;
+            startBtn.textContent = 'Başla';
         });
 
         nickInput?.addEventListener('keydown', (e) => {
@@ -1268,7 +1383,7 @@ class LaserGame {
         document.getElementById('nearMissOverlay')?.classList.remove('show');
 
         // Yeni tur: lazer ucu başlat ekranı merkezinde (0,0 dünya)
-        this.isCalibrated = false;
+        this.isCalibrated = this._faceDetectedOnce;
         this.gaze = { x: 0.5, y: 0.5 };
         this.smoothGaze = { x: 0.5, y: 0.5 };
         this.leftEye = { x: 0.45, y: 0.38 };
@@ -1339,8 +1454,12 @@ class LaserGame {
         if (this._detectRunning) return;
         this._detectRunning = true;
         const detect = async () => {
-            if (this.gameStarted && this.video && this.video.readyState >= 2 && this.faceMesh && this.detectionEnabled) {
-                try { await this.faceMesh.send({image: this.video}); } catch (e) {}
+            if (this.video && this.video.readyState >= 2 && this.faceMesh && this.detectionEnabled) {
+                try {
+                    await this.faceMesh.send({ image: this.video });
+                } catch (e) {
+                    console.warn('faceMesh.send:', e);
+                }
             }
             requestAnimationFrame(detect);
         };
