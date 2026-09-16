@@ -24,11 +24,21 @@ app.get('/apple-touch-icon-precomposed.png', (_req, res) => {
     res.sendFile(path.join(root, 'assets', 'ghost.png'));
 });
 
+const mimeFor = (filePath) => {
+    if (filePath.endsWith('.wasm')) return 'application/wasm';
+    if (filePath.endsWith('.data')) return 'application/octet-stream';
+    if (filePath.endsWith('.binarypb')) return 'application/octet-stream';
+    if (filePath.endsWith('.task')) return 'application/octet-stream';
+    return null;
+};
+
 app.use(express.static(root, {
     index: 'index.html',
     setHeaders(res, filePath) {
-        if (filePath.endsWith('.wasm')) {
-            res.setHeader('Content-Type', 'application/wasm');
+        const mime = mimeFor(filePath);
+        if (mime) res.setHeader('Content-Type', mime);
+        if (filePath.endsWith('main.js')) {
+            res.setHeader('Cache-Control', 'no-cache');
         }
     }
 }));

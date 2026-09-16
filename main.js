@@ -104,7 +104,6 @@ class LaserGame {
     }
     
     async init() {
-        await this.setupMediaPipe();
         await this.loadSprites();
         this.setupShaders();
         this.setupEventListeners();
@@ -119,11 +118,17 @@ class LaserGame {
         const startBtn = document.getElementById('startButton');
         if (!startBtn) return;
         startBtn.disabled = false;
-        startBtn.textContent = this.detectionEnabled ? 'Başla' : 'Başla (yüz takibi bekleniyor)';
+        startBtn.textContent = 'Başla';
+    }
+
+    setTrackingStatus(msg) {
+        const hint = document.querySelector('#start-overlay .hint-line');
+        if (hint && !this.gameStarted) hint.textContent = msg;
+        console.log('[yüz takibi]', msg);
     }
 
     isReadyToStart() {
-        return this.detectionEnabled;
+        return true;
     }
 
     waitForGlobal(name, timeoutMs = 12000) {
@@ -193,16 +198,22 @@ class LaserGame {
         };
     }
 
-    async ensureCamera() {
-        if (this.video?.readyState >= 2) return;
-        await this.setupVideo();
-    }
+    async ensureCameraAndTracking() {
+        if (!this.video?.srcObject) {
+            this.setTrackingStatus('Kamera açılıyor...');
+            await this.setupVideo();
+        }
+        if (!this.detectionEnabled) {
+            this.setTrackingStatus('Yüz takibi yükleniyor...');
+            await this.setupMediaPipe();
+        }
+        if (!this._detectRunning) this.startFaceDetection();
 
-    async waitForFaceDetection(timeoutMs = 10000) {
-        if (this._faceDetectedOnce || !this.detectionEnabled) return;
+        this.setTrackingStatus('Yüzün aranıyor — kameraya bak...');
         const started = Date.now();
-        while (!this._faceDetectedOnce && Date.now() - started < timeoutMs) {
-            await new Promise(r => setTimeout(r, 80));
+        while (!this._faceDetectedOnce && Date.now() - started < 15000) {
+            await this.runFaceDetectionStep();
+            await new Promise(r => setTimeout(r, 60));
         }
     }
 
@@ -817,49 +828,22 @@ class LaserGame {
         });
     }
 
-    async loadVisionModule() {
-        const mpVersion = '0.10.14';
-        try {
-            return await import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/+esm`);
-        } catch (importError) {
-            console.warn('ESM import başarısız, vision_bundle deneniyor:', importError);
-            await this.loadScript(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/vision_bundle.js`);
-            return import(`https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/+esm`);
-        }
-    }
-
-    async createFaceLandmarker(delegate) {
-        const mpVersion = '0.10.14';
-        const { FaceLandmarker, FilesetResolver } = await this.loadVisionModule();
-        const vision = await FilesetResolver.forVisionTasks(
-            `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${mpVersion}/wasm`
-        );
-        return FaceLandmarker.createFromOptions(vision, {
-            baseOptions: {
-                modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
-                delegate
-            },
-            runningMode: 'VIDEO',
-            numFaces: 1,
-            outputFaceBlendshapes: false,
-            outputFacialTransformationMatrixes: false
-        });
-    }
-
-    async setupLegacyFaceMesh() {
-        const mpVersion = '0.4.1633559619';
-        await this.loadScript(`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${mpVersion}/face_mesh.js`);
+    async setupLocalFaceMesh() {
         if (typeof window.FaceMesh === 'undefined') {
-            throw new Error('FaceMesh global bulunamadı');
+            await this.loadScript('/vendor/mediapipe/face_mesh/face_mesh.js');
         }
+        if (typeof window.FaceMesh === 'undefined') {
+            throw new Error('FaceMesh script yüklenemedi');
+        }
+
         this.faceMesh = new window.FaceMesh({
-            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh@${mpVersion}/${file}`
+            locateFile: (file) => `/vendor/mediapipe/face_mesh/${file}`
         });
         this.faceMesh.setOptions({
             maxNumFaces: 1,
             refineLandmarks: true,
-            minDetectionConfidence: 0.35,
-            minTrackingConfidence: 0.35
+            minDetectionConfidence: 0.3,
+            minTrackingConfidence: 0.3
         });
         this.faceMesh.onResults((results) => {
             if (results.multiFaceLandmarks?.[0]) {
@@ -870,29 +854,52 @@ class LaserGame {
             await this.faceMesh.initialize();
         }
         this._useLegacyFaceMesh = true;
+        this.detectionEnabled = true;
+    }
+
+    async setupLocalFaceLandmarker(delegate) {
+        const { FaceLandmarker, FilesetResolver } = await import('/vendor/mediapipe/tasks-vision/vision_bundle.mjs');
+        const vision = await FilesetResolver.forVisionTasks('/vendor/mediapipe/tasks-vision/wasm');
+        this.faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+            baseOptions: {
+                modelAssetPath: '/vendor/models/face_landmarker.task',
+                delegate
+            },
+            runningMode: 'VIDEO',
+            numFaces: 1,
+            outputFaceBlendshapes: false,
+            outputFacialTransformationMatrixes: false
+        });
+        this._useLegacyFaceMesh = false;
+        this.detectionEnabled = true;
     }
 
     async setupMediaPipe() {
+        if (this.detectionEnabled) return;
+
+        // 1) Yerel FaceMesh — localhost'ta çalışan sistem
+        try {
+            await this.setupLocalFaceMesh();
+            this.setTrackingStatus('FaceMesh hazır');
+            return;
+        } catch (faceMeshError) {
+            console.warn('Yerel FaceMesh başarısız:', faceMeshError);
+        }
+
+        // 2) Yerel FaceLandmarker yedeği
         try {
             try {
-                this.faceLandmarker = await this.createFaceLandmarker('GPU');
-            } catch (gpuError) {
-                console.warn('GPU face landmarker başarısız, CPU deneniyor:', gpuError);
-                this.faceLandmarker = await this.createFaceLandmarker('CPU');
+                await this.setupLocalFaceLandmarker('GPU');
+            } catch {
+                await this.setupLocalFaceLandmarker('CPU');
             }
-            this.detectionEnabled = true;
-            this._useLegacyFaceMesh = false;
+            this.setTrackingStatus('FaceLandmarker hazır');
+            return;
         } catch (landmarkerError) {
-            console.warn('FaceLandmarker başarısız, FaceMesh deneniyor:', landmarkerError);
-            try {
-                await this.setupLegacyFaceMesh();
-                this.detectionEnabled = true;
-            } catch (legacyError) {
-                console.error('Yüz takibi yüklenemedi:', legacyError);
-                this.detectionEnabled = false;
-                this.faceLandmarker = null;
-                this.faceMesh = null;
-            }
+            console.error('Yüz takibi yüklenemedi:', landmarkerError);
+            this.detectionEnabled = false;
+            this.faceLandmarker = null;
+            this.faceMesh = null;
         }
     }
 
@@ -1302,17 +1309,31 @@ class LaserGame {
                 audio: false
             });
 
+            video.setAttribute('playsinline', '');
+            video.setAttribute('webkit-playsinline', '');
+            video.muted = true;
+            video.playsInline = true;
             video.srcObject = stream;
             this.video = video;
 
             await new Promise((resolve, reject) => {
-                video.onloadedmetadata = () => {
-                    video.play().then(resolve).catch(reject);
-                };
+                const finish = () => resolve();
                 video.onerror = () => reject(new Error('Video yüklenemedi'));
+                video.onloadedmetadata = () => {
+                    video.play().then(finish).catch(reject);
+                };
+                if (video.readyState >= 1) {
+                    video.play().then(finish).catch(reject);
+                }
             });
 
-            this.startFaceDetection();
+            await new Promise((resolve) => {
+                if (video.readyState >= 2 && video.videoWidth > 0) {
+                    resolve();
+                    return;
+                }
+                video.addEventListener('loadeddata', resolve, { once: true });
+            });
         } catch (error) {
             console.error('Kamera hatası:', error);
             throw error;
@@ -1335,27 +1356,26 @@ class LaserGame {
             }
 
             startBtn.disabled = true;
-            startBtn.textContent = '⏳ Kamera açılıyor...';
+            startBtn.textContent = '⏳ Hazırlanıyor...';
             try {
-                await this.ensureCamera();
+                await this.ensureCameraAndTracking();
             } catch (error) {
-                alert('Oynamak için kamera izni gerekli. Safari/Chrome ayarlarından siteye kamera izni ver.');
+                console.error(error);
+                alert('Kamera veya yüz takibi açılamadı. Tarayıcı ayarlarından kamera izni ver, sayfayı yenile.');
                 startBtn.disabled = false;
                 startBtn.textContent = 'Başla';
                 return;
             }
 
             if (!this.detectionEnabled) {
-                alert('Yüz takibi yüklenemedi. Sayfayı yenile ve Chrome/Safari dene.');
+                alert('Yüz takibi yüklenemedi. Sayfayı yenile (Cmd+Shift+R).');
                 startBtn.disabled = false;
                 startBtn.textContent = 'Başla';
                 return;
             }
 
-            startBtn.textContent = '⏳ Yüz takibi...';
-            await this.waitForFaceDetection(12000);
             if (!this._faceDetectedOnce) {
-                alert('Yüzün algılanamadı. Işığı artır, kameraya doğrudan bak ve tekrar dene.');
+                alert('Yüzün algılanamadı. Işığı artır, gözlük varsa çıkar, kameraya doğrudan bak.');
                 startBtn.disabled = false;
                 startBtn.textContent = 'Başla';
                 return;
