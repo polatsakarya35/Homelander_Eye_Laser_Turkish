@@ -25,6 +25,9 @@ class LaserGame {
         this.smoothMouth = 0;
         this.mouthWasOpen = false;
         this.spaceHeld = false;
+        this.mouthRestRatio = null;
+        this.mouthOpenFrames = 0;
+        this.powerTriggeredThisOpen = false;
         this.powerCharges = 3;
         this.maxPowerCharges = 3;
         this.powerDurationMs = 5000; // 5 sn — bir dalgayı temizlemek için ideal
@@ -985,25 +988,28 @@ class LaserGame {
         this.rightEye.x = right.nx;
         this.rightEye.y = right.ny;
 
-        // Ağız: Space basılıysa yüz algısı ezmesin
+        // Ağız: sadece üst/alt dudak — kapalı ağıza göre kalibre (yanlış tetiklenme olmasın)
         if (!this.spaceHeld) {
             const upperLip = landmarks[13];
             const lowerLip = landmarks[14];
-            const topLip = landmarks[0];
-            const chin = landmarks[17];
             if (upperLip && lowerLip) {
                 const mouthGap = Math.hypot(upperLip.x - lowerLip.x, upperLip.y - lowerLip.y);
-                const tallGap = (topLip && chin)
-                    ? Math.hypot(topLip.x - chin.x, topLip.y - chin.y)
-                    : mouthGap * 3;
                 const eyeDist = Math.hypot(
                     leftEyeCenter.x - rightEyeCenter.x,
                     leftEyeCenter.y - rightEyeCenter.y
                 ) || 0.05;
-                // Daha hassas: hafif açık ağız yeterli
                 const ratio = mouthGap / eyeDist;
-                const tall = tallGap / eyeDist;
-                const raw = Math.max((ratio - 0.08) / 0.35, (tall - 0.45) / 0.55);
+
+                // İlk birkaç ölçüm = kapalı ağız baseline
+                if (this.mouthRestRatio == null) {
+                    this.mouthRestRatio = ratio;
+                } else if (!this.mouthWasOpen) {
+                    this.mouthRestRatio = this.mouthRestRatio * 0.95 + ratio * 0.05;
+                }
+
+                // Kapalı ağıza göre belirgin açılma gerekir
+                const delta = ratio - this.mouthRestRatio;
+                const raw = (delta - 0.08) / 0.22;
                 this.mouthOpen = Math.max(0, Math.min(1, raw));
             }
         }
@@ -1077,15 +1083,30 @@ class LaserGame {
         this.smoothLeftEye.y += (this.leftEye.y - this.smoothLeftEye.y) * 0.22;
         this.smoothRightEye.x += (this.rightEye.x - this.smoothRightEye.x) * 0.22;
         this.smoothRightEye.y += (this.rightEye.y - this.smoothRightEye.y) * 0.22;
-        this.smoothMouth += (this.mouthOpen - this.smoothMouth) * 0.28;
+        this.smoothMouth += (this.mouthOpen - this.smoothMouth) * 0.22;
 
-        // Ağız açılınca 1 hak harca (histerezis: yanlış tetiklenmesin)
-        const openThresh = 0.28;
-        const closeThresh = 0.16;
-        let openNow = this.mouthWasOpen
+        // Sadece gerçekten ağız açılınca güç (yanlış tetik yok)
+        const openThresh = 0.55;
+        const closeThresh = 0.28;
+        const openNow = this.mouthWasOpen
             ? this.smoothMouth > closeThresh
             : this.smoothMouth > openThresh;
-        if (openNow && !this.mouthWasOpen && this.gameStarted && !this.gameOver) {
+
+        if (openNow) this.mouthOpenFrames += 1;
+        else {
+            this.mouthOpenFrames = 0;
+            this.powerTriggeredThisOpen = false;
+        }
+
+        // En az ~8 kare açık kalsın — anlık gürültü / konuşma tetiklemesin
+        if (
+            openNow &&
+            !this.powerTriggeredThisOpen &&
+            this.mouthOpenFrames >= 8 &&
+            this.gameStarted &&
+            !this.gameOver
+        ) {
+            this.powerTriggeredThisOpen = true;
             this.tryActivatePower();
         }
         this.mouthWasOpen = openNow;
@@ -1535,6 +1556,8 @@ class LaserGame {
         this.smoothMouth = 0;
         this.mouthWasOpen = false;
         this.spaceHeld = false;
+        this.mouthRestRatio = null;
+        this.mouthOpenFrames = 0;
         this.powerCharges = this.maxPowerCharges;
         this.powerActiveUntil = 0;
         this.updatePowerUI();
